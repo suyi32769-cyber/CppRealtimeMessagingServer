@@ -4,6 +4,7 @@ import socket
 import sqlite3
 import subprocess
 import tempfile
+import threading
 import time
 from pathlib import Path
 from ws_client import Client
@@ -22,11 +23,20 @@ with tempfile.TemporaryDirectory(prefix='realtime-robust-') as tmp:
             except OSError:
                 assert server.poll() is None and time.monotonic() < deadline, 'server failed to start'
                 time.sleep(0.1)
-        c.sock.settimeout(8)
+        c.sock.settimeout(12)
         c.send_raw(b'{broken')
         assert c.read()['type'] == 'error'
         c.send({'type': 'auth', 'token': 'demo-alice'}); assert c.read()['type'] == 'auth_ok'
+        c.send({'type': 'create_room', 'room_id': 'room'}); assert c.read()['type'] == 'room_created'
         c.send({'type': 'join', 'room_id': 'room'}); assert c.read()['type'] == 'joined'
+        with sqlite3.connect(db, timeout=1, check_same_thread=False) as connection:
+            connection.execute('BEGIN IMMEDIATE')
+            release = threading.Timer(1.3, connection.rollback)
+            release.start()
+            c.send({'type': 'send', 'room_id': 'room', 'client_msg_id': 'retry', 'content': 'retry succeeds'})
+            assert c.read()['type'] == 'send_ok'
+            assert c.read()['content'] == 'retry succeeds'
+            release.join(timeout=3)
         with sqlite3.connect(db, timeout=1) as connection:
             connection.execute('BEGIN IMMEDIATE')
             c.send({'type': 'send', 'room_id': 'room', 'client_msg_id': 'lock', 'content': 'blocked'})

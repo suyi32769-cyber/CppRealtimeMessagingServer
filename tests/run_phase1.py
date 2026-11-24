@@ -27,7 +27,7 @@ def run_with_server(server, checks):
 run_with_server(['redis-server', '--bind', '127.0.0.1', '--port', '16379', '--save', '', '--appendonly', 'no'],
                 [[str(root / 'build/dependency_smoke')]])
 with tempfile.TemporaryDirectory(prefix='phase1-', dir=root / 'build') as tmp:
-    run_with_server([str(root / 'build/realtime_server'), '--no-redis', '--db', str(Path(tmp) / 'messages.db')], [
-        [sys.executable, str(root / 'tests/ws_smoke.py'), '{"type":"ping"}', '{"type":"pong"}'],
-        [sys.executable, str(root / 'tests/ws_smoke.py'), 'invalid', '{"type":"error","message":"expected JSON object with type ping"}'],
+    run_with_server([str(root / 'build/realtime_server'), '--no-redis', '--port', '19101', '--db', str(Path(tmp) / 'messages.db')], [
+        [sys.executable, str(root / 'tests/ws_smoke.py'), '{"type":"ping"}', '{"type":"pong"}', '19101'],
+        [sys.executable, str(root / 'tests/ws_smoke.py'), 'invalid', '{"type":"error","message":"expected JSON object with type ping"}', '19101'],
     ])

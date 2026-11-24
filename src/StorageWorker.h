@@ -11,7 +11,7 @@
 
 class StorageWorker {
 public:
-    using Job = std::function<void(MessageRepository &)>;
+    using Job = std::function<void(MessageStore &)>;
     explicit StorageWorker(const std::string &path) {
         std::promise<void> ready;
         auto started = ready.get_future();

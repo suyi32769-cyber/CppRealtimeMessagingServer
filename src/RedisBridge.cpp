@@ -1,5 +1,5 @@
 #include "RedisBridge.h"
-#include <hiredis/hiredis.h>
+#include <hiredis.h>
 #include <chrono>
 #include <iostream>
 #include <memory>
@@ -47,13 +47,18 @@ void RedisPublisher::run() {
             if (queue_.empty() && stopping_) break;
             event = std::move(queue_.front()); queue_.pop_front();
         }
-        if (!context) context = connect(host_, port_);
-        if (!context) { std::cerr << "Redis publish unavailable; message retained in SQLite" << std::endl; continue; }
-        Reply reply(static_cast<redisReply *>(redisCommand(context.get(), "PUBLISH %s %b", channel, event.data(), event.size())), freeReplyObject);
-        if (!reply || reply->type != REDIS_REPLY_INTEGER) {
-            std::cerr << "Redis publish failed; message retained in SQLite" << std::endl;
+        bool sent = false;
+        for (int attempt = 0; attempt < 2 && !sent; ++attempt) {
+            if (!context) context = connect(host_, port_);
+            if (!context) break;
+            Reply reply(static_cast<redisReply *>(redisCommand(context.get(), "PUBLISH %s %b", channel, event.data(), event.size())), freeReplyObject);
+            if (reply && reply->type == REDIS_REPLY_INTEGER) { sent = true; break; }
+            const bool transport_error = !reply;
             context.reset();
+            // A lost reply is ambiguous: the peer may have published already. Receivers deduplicate.
+            if (!transport_error) break;
         }
+        if (!sent) std::cerr << "Redis publish failed; message retained in SQLite" << std::endl;
     }
 }
 

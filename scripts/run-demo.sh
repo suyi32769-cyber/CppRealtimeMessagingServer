@@ -7,11 +7,13 @@ if [[ $# -ne 1 || "$1" != /* ]]; then
 fi
 db=$1
 redis_port=${REDIS_PORT:-6379}
+port_a=${PORT_A:-9001}
+port_b=${PORT_B:-9002}
 if [[ ! -d "$(dirname "$db")" ]]; then echo 'Database parent directory must exist.' >&2; exit 2; fi
 redis-cli -h 127.0.0.1 -p "$redis_port" ping | grep -qx PONG || { echo 'Local Redis is not ready.' >&2; exit 1; }
-./build/realtime_server --port 9001 --instance-id A --db "$db" --redis-port "$redis_port" &
+./build/realtime_server --port "$port_a" --instance-id A --db "$db" --redis-port "$redis_port" &
 first=$!
-./build/realtime_server --port 9002 --instance-id B --db "$db" --redis-port "$redis_port" &
+./build/realtime_server --port "$port_b" --instance-id B --db "$db" --redis-port "$redis_port" &
 second=$!
 cleanup() {
     trap - EXIT INT TERM

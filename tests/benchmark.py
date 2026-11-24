@@ -35,6 +35,7 @@ def client_task(index):
         client.send({'type': 'auth', 'token': 'demo-alice' if index % 2 == 0 else 'demo-bob'})
         assert client.read()['type'] == 'auth_ok'
         room = f'r{index}'
+        client.send({'type': 'create_room', 'room_id': room}); assert client.read()['type'] in ('room_created', 'error')
         client.send({'type': 'join', 'room_id': room}); assert client.read()['type'] == 'joined'
         ready.wait(timeout=10); start.wait()
         seq = 0
@@ -82,7 +83,7 @@ with tempfile.TemporaryDirectory(prefix='bench-') as tmp:
             log.flush(); log.seek(0)
             raise RuntimeError(f'benchmark failed: {errors}; server log: {log.read()[-4000:]}')
         latencies.sort()
-        result = {'environment': platform.platform(), 'database_filesystem': 'WSL /tmp', 'logical_cpus': os.cpu_count(), 'clients': COUNT,
+        result = {'environment': platform.platform(), 'database_directory': str(Path(tmp).parent), 'logical_cpus': os.cpu_count(), 'clients': COUNT,
                   'content_bytes': len(CONTENT), 'target_seconds': DURATION, 'elapsed_seconds': round(elapsed, 3),
                   'successful_messages': len(latencies), 'messages_per_second': round(len(latencies) / elapsed, 2),
                   'ack_latency_ms_p50': round(percentile(latencies, .50), 3),

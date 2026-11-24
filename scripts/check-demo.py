@@ -13,6 +13,7 @@ try:
     clients.extend([a, b])
     for client, token in ((a, 'demo-alice'), (b, 'demo-bob')):
         client.send({'type': 'auth', 'token': token}); assert client.read()['type'] == 'auth_ok'
+        client.send({'type': 'create_room', 'room_id': room}); assert client.read()['type'] in ('room_created', 'error')
         client.send({'type': 'join', 'room_id': room}); assert client.read()['type'] == 'joined'
     a.send({'type': 'send', 'room_id': room, 'client_msg_id': uuid.uuid4().hex, 'content': 'deployment-check'})
     confirmation = a.read(); assert confirmation['type'] == 'send_ok' and not confirmation['duplicate']

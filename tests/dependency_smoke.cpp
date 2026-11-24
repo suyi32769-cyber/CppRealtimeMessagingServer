@@ -1,5 +1,5 @@
 #include <SQLiteCpp/SQLiteCpp.h>
-#include <hiredis/hiredis.h>
+#include <hiredis.h>
 #include <nlohmann/json.hpp>
 #include <iostream>
 #include <memory>

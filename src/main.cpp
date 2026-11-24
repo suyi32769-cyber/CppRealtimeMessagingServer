@@ -3,40 +3,22 @@
 #include "StorageWorker.h"
 #include "RedisBridge.h"
 #include "SignalWatcher.h"
+#include "ConnectionManager.h"
+#include "MessageDispatcher.h"
+#include "Protocol.h"
+#include "RecentEvents.h"
 #include <atomic>
 #include <cstdint>
 #include <iostream>
-#include <limits>
 #include <memory>
 #include <string>
-#include <unordered_map>
-#include <unordered_set>
 
 using Json = nlohmann::json;
-struct Connection {
-    std::uint64_t id = 0;
-    std::string user;
-    std::unordered_set<std::string> rooms;
-};
-using Socket = uWS::WebSocket<false, true, Connection>;
-
-static bool text_field(const Json &v, const char *key, std::size_t max) {
-    auto it = v.find(key);
-    return it != v.end() && it->is_string() && !it->get_ref<const std::string &>().empty()
-        && it->get_ref<const std::string &>().size() <= max;
+using Protocol::text_field;
+using Protocol::nonnegative_integer;
+static std::string member_topic(const std::string &room, const std::string &user) {
+    return "member:" + Json::array({room, user}).dump();
 }
-static bool nonnegative_integer(const Json &v, const char *key, std::int64_t &out) {
-    auto it = v.find(key);
-    if (it == v.end() || !it->is_number_integer()) return false;
-    if (it->is_number_unsigned() && it->get<std::uint64_t>() > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) return false;
-    out = it->get<std::int64_t>();
-    return out >= 0;
-}
-static Json message_json(const StoredMessage &m) {
-    return {{"type", "message"}, {"message_id", m.id}, {"room_id", m.room}, {"sender_id", m.sender},
-            {"client_msg_id", m.client_id}, {"content", m.content}, {"created_at", m.created_at}};
-}
-
 int main(int argc, char **argv) {
     std::string database = "messages.db";
     try {
@@ -65,19 +47,21 @@ int main(int argc, char **argv) {
         sigset_t signals = block_shutdown_signals();
         uWS::App app;
         auto *loop = uWS::Loop::get();
-        std::unordered_map<std::uint64_t, Socket *> connections;
-        std::uint64_t next_id = 0;
+        ConnectionManager connections;
         std::size_t in_flight = 0;
         std::unique_ptr<RedisPublisher> publisher;
         std::unique_ptr<RedisSubscriber> subscriber;
         auto pending_redis = std::make_shared<std::atomic<unsigned>>(0);
+        auto recent_events = std::make_shared<RecentEvents>(8192);
         if (redis_enabled) {
             publisher = std::make_unique<RedisPublisher>(redis_host, redis_port);
             subscriber = std::make_unique<RedisSubscriber>(redis_host, redis_port,
-                [instance, pending_redis, loop, &app](std::string raw) {
-                    Json event = Json::parse(raw, nullptr, false);
+                [instance, pending_redis, recent_events, loop, &app](std::string raw) {
+                    Json event = Protocol::parse_object(raw, 65536);
                     if (!event.is_object() || !text_field(event, "instance_id", 64) || event["instance_id"] == instance ||
-                        !event.contains("message") || !event["message"].is_object()) return;
+                        !event.contains("message") || !event["message"].is_object() || !event.contains("recipients") ||
+                        !event["recipients"].is_array() || event["recipients"].size() > 4096) return;
+                    for (const auto &user : event["recipients"]) if (!user.is_string() || user.get_ref<const std::string &>().empty() || user.get_ref<const std::string &>().size() > 64) return;
                     Json message = std::move(event["message"]);
                     std::int64_t id = 0;
                     if (!text_field(message, "room_id", 64) || !text_field(message, "sender_id", 64) ||
@@ -88,10 +72,13 @@ int main(int argc, char **argv) {
                     do {
                         if (count >= 256) { std::cerr << "Redis delivery queue full; use history" << std::endl; return; }
                     } while (!pending_redis->compare_exchange_weak(count, count + 1));
-                    loop->defer([message = std::move(message), pending_redis, &app]() {
+                    const std::string key = event["instance_id"].get<std::string>() + ":" + std::to_string(id);
+                    if (!recent_events->claim(key)) { --*pending_redis; return; }
+                    loop->defer([message = std::move(message), recipients = std::move(event["recipients"]), pending_redis, &app]() {
                         --*pending_redis;
-                        const std::string topic = "room:" + message["room_id"].get<std::string>();
-                        app.publish(topic, message.dump(), uWS::OpCode::TEXT);
+                        const auto payload = message.dump();
+                        for (const auto &user : recipients)
+                            app.publish(member_topic(message["room_id"], user), payload, uWS::OpCode::TEXT);
                     });
                 });
         }
@@ -103,18 +90,24 @@ int main(int argc, char **argv) {
         behavior.closeOnBackpressureLimit = true;
         behavior.idleTimeout = 30;
         behavior.sendPingsAutomatically = true;
-        behavior.open = [&connections, &next_id](auto *ws) {
-            ws->getUserData()->id = ++next_id;
-            connections.emplace(next_id, ws);
+        behavior.open = [&connections](auto *ws) { connections.attach(ws); };
+        behavior.dropped = [](auto *ws, std::string_view, uWS::OpCode) {
+            auto *connection = ws->getUserData();
+            if (!connection->backpressure_reported) {
+                connection->backpressure_reported = true;
+                std::cerr << "backpressure limit reached for connection " << connection->id << std::endl;
+            }
         };
         behavior.close = [&connections](auto *ws, int, std::string_view) {
-            connections.erase(ws->getUserData()->id);
+            if (ws->getUserData()->backpressure_reported)
+                std::cerr << "backpressured connection closed " << ws->getUserData()->id << std::endl;
+            connections.detach(ws);
         };
         behavior.message = [&app, &connections, &worker, &in_flight, &publisher, instance, loop](auto *ws, std::string_view input, uWS::OpCode opcode) {
             auto reply = [ws](const Json &value) { ws->send(value.dump(), uWS::OpCode::TEXT); };
             auto error = [&reply](const char *message) { reply(Json{{"type", "error"}, {"message", message}}); };
             if (opcode != uWS::OpCode::TEXT) { error("text frames only"); return; }
-            Json value = Json::parse(input, nullptr, false);
+            Json value = Protocol::parse_object(input);
             if (!value.is_object() || !text_field(value, "type", 16)) { error("expected JSON object with type ping"); return; }
             const std::string type = value["type"];
             auto *connection = ws->getUserData();
@@ -129,20 +122,17 @@ int main(int argc, char **argv) {
                 reply(Json{{"type", "auth_ok"}, {"user_id", connection->user}}); return;
             }
             if (connection->user.empty()) { error("authentication required"); return; }
-            if (type != "join" && type != "leave" && type != "send" && type != "history" && type != "ack") { error("unknown type"); return; }
+            if (type != "create_room" && type != "join" && type != "leave" && type != "send" && type != "history" && type != "ack") { error("unknown type"); return; }
             if (!text_field(value, "room_id", 64)) { error("invalid room_id"); return; }
             const std::string room = value["room_id"];
-            const auto topic = "room:" + room;
+            const auto topic = member_topic(room, connection->user);
             if (type == "join") {
                 if (!connection->rooms.count(room) && connection->rooms.size() >= 32) { error("room limit reached"); return; }
-                connection->rooms.insert(room); ws->subscribe(topic);
-                reply(Json{{"type", "joined"}, {"room_id", room}}); return;
             }
             if (type == "leave") {
-                if (!connection->rooms.erase(room)) { error("not in room"); return; }
-                ws->unsubscribe(topic); reply(Json{{"type", "left"}, {"room_id", room}}); return;
+                if (!connection->rooms.count(room)) { error("not in room"); return; }
             }
-            if (!connection->rooms.count(room)) { error("not in room"); return; }
+            if (type != "create_room" && type != "join" && type != "leave" && !connection->rooms.count(room)) { error("not in room"); return; }
             if (type == "send" && (!text_field(value, "content", 4096) || !text_field(value, "client_msg_id", 128))) {
                 error("invalid message fields"); return;
             }
@@ -158,36 +148,30 @@ int main(int argc, char **argv) {
             const std::string user = connection->user;
             const std::string content = type == "send" ? value["content"].get<std::string>() : "";
             const std::string client_id = type == "send" ? value["client_msg_id"].get<std::string>() : "";
+            const DispatchRequest request{type, room, user, content, client_id, number, use_offset};
             ++in_flight;
-            bool accepted = worker.submit([=, &app, &connections, &in_flight, &publisher](MessageRepository &repo) {
+            bool accepted = worker.submit([=, &app, &connections, &in_flight, &publisher](MessageStore &repo) {
                 Json response, broadcast;
+                std::vector<std::string> recipients;
                 try {
-                    if (type == "send") {
-                        auto result = repo.insert(room, user, client_id, content);
-                        response = {{"type", "send_ok"}, {"message_id", result.message.id}, {"client_msg_id", client_id}, {"duplicate", !result.inserted}};
-                        if (result.inserted) broadcast = message_json(result.message);
-                    } else if (type == "history") {
-                        auto after = use_offset ? repo.offset(user, room) : number;
-                        Json messages = Json::array();
-                        for (const auto &m : repo.history(room, after, 100)) messages.push_back(message_json(m));
-                        response = {{"type", "history"}, {"room_id", room}, {"after_message_id", after}, {"messages", std::move(messages)}};
-                    } else {
-                        if (repo.acknowledge(user, room, number)) response = {{"type", "ack_ok"}, {"room_id", room}, {"message_id", number}};
-                        else response = {{"type", "error"}, {"message", "message not found in room"}};
-                    }
+                    auto result = MessageDispatcher::dispatch(repo, request);
+                    response = std::move(result.response);
+                    broadcast = std::move(result.broadcast);
+                    recipients = std::move(result.recipients);
                 } catch (const std::invalid_argument &) {
                     response = {{"type", "error"}, {"message", "client_msg_id conflict"}};
                 } catch (const std::exception &e) {
                     std::cerr << "storage error: " << e.what() << std::endl;
                     response = {{"type", "error"}, {"message", "storage failure"}};
                 }
-                loop->defer([id, topic, instance, response = std::move(response), broadcast = std::move(broadcast), &app, &connections, &in_flight, &publisher]() {
+                loop->defer([id, topic, room, type, instance, response = std::move(response), broadcast = std::move(broadcast), recipients = std::move(recipients), &app, &connections, &in_flight, &publisher]() mutable {
                     --in_flight;
-                    auto found = connections.find(id);
-                    if (found != connections.end()) found->second->send(response.dump(), uWS::OpCode::TEXT);
+                    if (response.value("type", "") == "joined" && !connections.change_room(id, room, topic, true)) response = {{"type", "error"}, {"message", "room limit reached"}};
+                    if (response.value("type", "") == "left") connections.change_room(id, room, topic, false);
+                    connections.send(id, response.dump());
                     if (!broadcast.is_null()) {
-                        app.publish(topic, broadcast.dump(), uWS::OpCode::TEXT);
-                        if (publisher && !publisher->publish(Json{{"instance_id", instance}, {"message", broadcast}}.dump()))
+                        for (const auto &user : recipients) app.publish(member_topic(room, user), broadcast.dump(), uWS::OpCode::TEXT);
+                        if (publisher && !publisher->publish(Json{{"instance_id", instance}, {"message", broadcast}, {"recipients", recipients}}.dump()))
                             std::cerr << "Redis publish queue full; message retained in SQLite" << std::endl;
                     }
                 });

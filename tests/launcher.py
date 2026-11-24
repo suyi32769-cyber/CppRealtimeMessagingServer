@@ -25,15 +25,15 @@ with tempfile.TemporaryDirectory(prefix='realtime-launch-') as tmp:
     try:
         wait_for(16379, True)
         assert redis.poll() is None
-        env = os.environ.copy(); env['REDIS_PORT'] = '16379'
+        env = os.environ.copy(); env['REDIS_PORT'] = '16379'; env['PORT_A'] = '19105'; env['PORT_B'] = '19106'
         launcher = subprocess.Popen(['bash', str(ROOT / 'scripts/run-demo.sh'), str(Path(tmp) / 'db.sqlite')], cwd=ROOT,
                                     env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        for port in (9001, 9002): wait_for(port, True)
-        for port in (9001, 9002):
+        for port in (19105, 19106): wait_for(port, True)
+        for port in (19105, 19106):
             c = Client(port); c.send({'type': 'ping'}); assert c.read()['type'] == 'pong'; c.close()
         assert launcher.poll() is None
         launcher.terminate(); launcher.wait(timeout=10)
-        for port in (9001, 9002): wait_for(port, False)
+        for port in (19105, 19106): wait_for(port, False)
         print('PASS: demo launcher starts and stops both local instances')
     finally:
         if launcher is not None and launcher.poll() is None:

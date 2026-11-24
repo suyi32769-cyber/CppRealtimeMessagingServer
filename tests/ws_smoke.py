@@ -9,9 +9,10 @@ import sys
 
 payload = sys.argv[1].encode()
 expected = sys.argv[2].encode()
+port = int(sys.argv[3]) if len(sys.argv) > 3 else 9001
 key = base64.b64encode(os.urandom(16)).decode()
-with socket.create_connection(('127.0.0.1', 9001), timeout=5) as sock:
-    sock.sendall((f'GET / HTTP/1.1\r\nHost: 127.0.0.1:9001\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n').encode())
+with socket.create_connection(('127.0.0.1', port), timeout=5) as sock:
+    sock.sendall((f'GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n').encode())
     response = b''
     while b'\r\n\r\n' not in response:
         response += sock.recv(1)

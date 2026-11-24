@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Two independent processes, disposable Redis outage, recovery and history."""
 import socket
+import json
 import subprocess
 import tempfile
 import time
@@ -49,6 +50,7 @@ def wait_listener(port, process):
 
 def auth_join(client, token):
     client.send({'type': 'auth', 'token': token}); assert client.read()['type'] == 'auth_ok'
+    client.send({'type': 'create_room', 'room_id': 'room_001'}); assert client.read()['type'] in ('room_created', 'error')
     client.send({'type': 'join', 'room_id': 'room_001'}); assert client.read()['type'] == 'joined'
 
 def send(client, msgid, content):
@@ -59,16 +61,38 @@ def send(client, msgid, content):
 
 try:
     redis = start_redis()
-    a_proc = start_server(9001, 'A'); b_proc = start_server(9002, 'B')
+    a_proc = start_server(19103, 'A'); b_proc = start_server(19104, 'B')
     wait_subscribers()
     for proc in (a_proc, b_proc):
         if proc.poll() is not None:
             raise AssertionError('server did not start: ' + proc.stderr.read().decode(errors='replace'))
-    wait_listener(9001, a_proc); wait_listener(9002, b_proc)
-    a, b = Client(9001), Client(9002); clients.extend([a, b])
+    wait_listener(19103, a_proc); wait_listener(19104, b_proc)
+    a, b = Client(19103), Client(19104); clients.extend([a, b])
     auth_join(a, 'demo-alice'); auth_join(b, 'demo-bob')
+    # A numeric overflow in an untrusted Redis event must not kill the subscriber thread/process.
+    invalid = subprocess.run(['redis-cli', '-p', '16379', '--raw', 'PUBLISH', 'cpp-realtime-messages-v1', '{"x":1e99999}'],
+                             capture_output=True, text=True, check=True)
+    assert invalid.stdout.strip() == '2'
     first = send(a, 'a1', 'across')
     assert b.read()['message_id'] == first
+    # Restart after a successful publish, without publishing during the outage:
+    # the publisher's previous TCP context is stale when the first new event arrives.
+    redis.terminate(); redis.wait(timeout=5)
+    time.sleep(1)
+    redis = start_redis(); wait_subscribers()
+    quiet_restart = send(a, 'after-quiet-restart', 'first after restart')
+    delivered = b.read()
+    assert delivered['message_id'] == quiet_restart
+    # Replaying the same Redis event must not duplicate the local delivery.
+    duplicate = json.dumps({'instance_id': 'A', 'message': delivered, 'recipients': ['alice', 'bob']})
+    subprocess.run(['redis-cli', '-p', '16379', '--raw', 'PUBLISH', 'cpp-realtime-messages-v1', duplicate],
+                   capture_output=True, text=True, check=True)
+    b.sock.settimeout(.4)
+    try:
+        b.read(); raise AssertionError('duplicate Redis event was delivered twice')
+    except socket.timeout:
+        pass
+    b.sock.settimeout(3)
     second = send(b, 'b1', 'back')
     assert a.read()['message_id'] == second
     redis.terminate(); redis.wait(timeout=5)
@@ -88,11 +112,20 @@ try:
     assert b.read()['message_id'] == resumed
     b.close(); clients.remove(b)
     lost = send(a, 'a4', 'while disconnected')
-    b = Client(9002); clients.append(b); auth_join(b, 'demo-bob')
+    b = Client(19104); clients.append(b); auth_join(b, 'demo-bob')
+    b.send({'type': 'history', 'room_id': 'room_001', 'after_message_id': resumed})
+    assert [m['message_id'] for m in b.read()['messages']] == [lost]
     b.send({'type': 'history', 'room_id': 'room_001', 'after_message_id': resumed})
     assert [m['message_id'] for m in b.read()['messages']] == [lost]
     b.send({'type': 'ack', 'room_id': 'room_001', 'message_id': lost})
     assert b.read()['type'] == 'ack_ok'
+    b.send({'type': 'history', 'room_id': 'room_001'})
+    history = b.read()
+    assert history['after_message_id'] == 0
+    assert [m['message_id'] for m in history['messages']] == [first, quiet_restart, second, missed, resumed, lost]
+    for message_id in (first, quiet_restart, second, missed, resumed):
+        b.send({'type': 'ack', 'room_id': 'room_001', 'message_id': message_id})
+        assert b.read()['type'] == 'ack_ok'
     b.send({'type': 'history', 'room_id': 'room_001'})
     assert b.read()['messages'] == []
     for process in (a_proc, b_proc):

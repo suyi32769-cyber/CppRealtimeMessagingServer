@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Realtime · 消息实验室</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="brand"><div class="brand-mark">R<span>·</span></div><div><strong>Realtime</strong><small>消息实验室</small></div><span class="tag">DEMO</span></div>
+    <div class="side-scroll">
+      <div class="eyebrow">01 / 连接设置</div>
+      <h2>选择客户端</h2>
+      <p class="subtle">连接服务器，开始一场实时对话。</p>
+      <label for="identity">演示身份</label>
+      <select id="identity"><option value="alice">Alice</option><option value="bob">Bob</option></select>
+      <label for="instance">服务实例</label>
+      <select id="instance"><option value="A">实例 A · 9001</option><option value="B">实例 B · 9002</option></select>
+      <button id="connect" class="button primary wide"><span>连接服务</span><span>↗</span></button>
+      <div class="connection-status"><i id="connection-dot"></i><span id="connection-label">尚未连接</span><span id="connection-detail">本地安全隧道</span></div>
+      <div class="divider"></div>
+      <div class="eyebrow">02 / 聊天房间</div>
+      <h2>进入一个房间</h2>
+      <p class="subtle">双方使用相同的房间 ID 即可聊天。</p>
+      <label for="room-id">房间 ID</label>
+      <input id="room-id" value="room_001" maxlength="64" autocomplete="off" spellcheck="false">
+      <div class="room-actions"><button id="create" class="button light" disabled>创建房间</button><button id="join" class="button dark" disabled>加入房间 <span>→</span></button></div>
+      <div class="rooms-heading"><span>当前连接的房间</span><span id="room-count">0</span></div>
+      <div id="room-list" class="room-list"><div class="room-empty">加入后，房间会显示在这里</div></div>
+    </div>
+    <div class="side-footer"><span class="footer-orb">✳</span><div><strong>双实例演示</strong><small>SQLite · Redis · WebSocket</small></div></div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar"><div class="breadcrumb">工作台 <span>/</span> 实时消息</div><div class="top-right"><span class="secure-dot"></span> 本地访问 <span class="top-sep"></span> <span id="top-user">未连接</span></div></header>
+    <section class="page-head"><div><div class="eyebrow blue">REALTIME MESSAGING</div><h1>让消息，<span>即时抵达。</span></h1><p>连接、房间、消息与确认状态，都在这里一目了然。</p></div><div class="head-note"><span class="sparkle">✳</span><div><strong>试试双实例通信</strong><small>在另一个窗口选择不同身份和实例</small></div></div></section>
+    <div class="workspace">
+      <section class="chat card">
+        <div class="chat-header"><div class="chat-icon">#</div><div class="chat-title"><div class="eyebrow">CURRENT ROOM</div><h3 id="current-room">尚未选择房间</h3></div><div class="chat-tools"><button id="history" class="icon-button" disabled title="从头加载历史消息">↻ <span>历史消息</span></button><button id="leave" class="icon-button danger" disabled>退出房间</button></div></div>
+        <div id="messages" class="messages"><div class="empty-state"><div class="empty-art"><span class="bubble-one">···</span><span class="bubble-two">✳</span></div><h3>对话从这里开始</h3><p>连接服务并加入房间后，<br>消息会实时显示在这里。</p></div></div>
+        <div id="load-more-wrap" class="load-more-wrap" hidden><button id="load-more" class="text-button">加载下一页历史消息 ↓</button></div>
+        <div class="composer-area"><div class="composer"><textarea id="content" placeholder="输入一条消息…" rows="1" maxlength="4096" disabled></textarea><button id="send" class="send-button" disabled aria-label="发送消息">↑</button></div><div class="composer-hint"><span>Enter 发送 · Shift + Enter 换行</span><span id="byte-count">0 / 4096 字节</span></div></div>
+      </section>
+      <aside class="inspector">
+        <section class="card overview"><div class="panel-head"><div><div class="eyebrow">LIVE OVERVIEW</div><h3>连接概览</h3></div><span class="panel-icon">↗</span></div><div class="overview-item"><span>连接状态</span><strong><i id="overview-dot"></i><span id="overview-status">未连接</span></strong></div><div class="overview-item"><span>当前身份</span><strong id="overview-user">—</strong></div><div class="overview-item"><span>服务实例</span><strong id="overview-instance">—</strong></div><div class="overview-item"><span>已加入房间</span><strong id="overview-rooms">0</strong></div><div class="overview-note"> <span>●</span> 消息将先持久化，再进行广播</div></section>
+        <section class="card activity"><div class="panel-head"><div><div class="eyebrow">EVENT STREAM</div><h3>实时动态</h3></div><button id="clear-events" class="text-button">清空</button></div><p class="activity-subtitle">观察连接、消息和 ACK 的处理过程。</p><div id="events" class="events"><div class="event-empty">等待新的活动…</div></div><div class="activity-foot"><span class="pulse"></span> 实时事件记录 <span>仅当前窗口</span></div></section>
+        <div class="tip"><span>✦</span><p><strong>如何验证跨实例？</strong><br>打开两个窗口，分别连接 A / B，并加入同一个房间。</p></div>
+      </aside>
+    </div>
+  </main>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

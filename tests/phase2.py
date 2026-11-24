@@ -14,9 +14,9 @@ ROOT = Path(__file__).resolve().parent.parent
 
 class Client:
     def __init__(self):
-        self.sock = socket.create_connection(('127.0.0.1', 9001), timeout=3)
+        self.sock = socket.create_connection(('127.0.0.1', 19102), timeout=3)
         key = base64.b64encode(os.urandom(16)).decode()
-        self.sock.sendall((f'GET / HTTP/1.1\r\nHost: 127.0.0.1:9001\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n').encode())
+        self.sock.sendall((f'GET / HTTP/1.1\r\nHost: 127.0.0.1:19102\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n').encode())
         response = b''
         while not response.endswith(b'\r\n\r\n'):
             chunk = self.sock.recv(1)
@@ -54,7 +54,7 @@ class Client:
 
 temp = tempfile.TemporaryDirectory(prefix='phase2-', dir=ROOT / 'build')
 db = str(Path(temp.name) / 'messages.db')
-server = subprocess.Popen([str(ROOT / 'build/realtime_server'), '--no-redis', '--db', db], cwd=ROOT, stdout=subprocess.DEVNULL)
+server = subprocess.Popen([str(ROOT / 'build/realtime_server'), '--no-redis', '--port', '19102', '--db', db], cwd=ROOT, stdout=subprocess.DEVNULL)
 clients = []
 try:
     time.sleep(1)
@@ -68,6 +68,8 @@ try:
     for client, token, user in ((a, 'demo-alice', 'alice'), (b, 'demo-bob', 'bob')):
         client.send({'type': 'auth', 'token': token})
         assert client.read() == {'type': 'auth_ok', 'user_id': user}
+        client.send({'type': 'create_room', 'room_id': 'room_001'})
+        assert client.read()['type'] in ('room_created', 'error')
         client.send({'type': 'join', 'room_id': 'room_001'})
         assert client.read() == {'type': 'joined', 'room_id': 'room_001'}
     a.send({'type': 'send', 'room_id': 'room_001', 'client_msg_id': '1', 'content': 'hello'})
@@ -107,7 +109,7 @@ try:
         pass
     a.close(); b.close(); clients.clear()
     server.terminate(); assert server.wait(timeout=5) == 0, 'server did not shut down cleanly'
-    server = subprocess.Popen([str(ROOT / 'build/realtime_server'), '--no-redis', '--db', db], cwd=ROOT, stdout=subprocess.DEVNULL)
+    server = subprocess.Popen([str(ROOT / 'build/realtime_server'), '--no-redis', '--port', '19102', '--db', db], cwd=ROOT, stdout=subprocess.DEVNULL)
     time.sleep(1)
     assert server.poll() is None, 'server restart failed'
     b = Client(); clients.append(b)
