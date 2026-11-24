@@ -1,33 +1,62 @@
-# CppRealtimeMessagingServer — multi-instance prototype
+# CppRealtimeMessagingServer：实时消息服务演示
 
-This is a local single-host, two-process messaging demonstration. It supports WebSocket rooms, SQLite-backed messages, history and acknowledgements, and Redis Pub/Sub forwarding. It is not a production-ready high-availability system. Demo credentials and unencrypted local traffic are unsuitable for untrusted networks.
+基于 C++17 的单机双进程消息演示项目，支持 WebSocket 连接、演示令牌认证、聊天室、SQLite 消息持久化与历史补拉，并通过 Redis Pub/Sub 在实例间转发消息。项目还提供 Windows 本地网页，方便观察消息和 ACK。
 
-Tested on WSL2 Ubuntu, GCC 15.2, CMake 4.2, system SQLite 3.46.1 and Redis 8.0.5. The project uses C++17. SQLiteCpp requires SQLite 3.38 or newer and is built against system SQLite; Hiredis is built from the pinned source (version 1.6.0). A system SQLite package older than the stated minimum must be upgraded through that system's supported packages before building. See [LICENSES.md](LICENSES.md) for revision pins and license information. Other package versions have not yet been validated.
+本项目是演示原型，不是生产级高可用系统。房间是公开的，固定演示令牌不适合作为真实认证；服务默认只监听回环地址。
 
-On Ubuntu install the prerequisites with appropriate administrator approval: `build-essential cmake git pkg-config zlib1g-dev libsqlite3-dev redis-server python3`. This changes system packages. Fetch pinned sources into an otherwise empty `third_party` directory with `bash scripts/fetch-deps.sh`; the script refuses to overwrite existing source directories. A clean dependency download and build was verified on this WSL Ubuntu installation, not on a second machine. Then:
+## 环境与依赖
+
+项目使用 C++17、CMake、uWebSockets/uSockets、SQLiteCpp、nlohmann/json、Hiredis、GoogleTest、Redis 和 Python 3。SQLiteCpp 使用系统 SQLite，要求版本不低于 3.38；Hiredis 1.6.0 从固定版本源码构建。各依赖来源和许可见 [LICENSES.md](LICENSES.md)。
+
+已验证环境包括 WSL2 Ubuntu（GCC 15.2、CMake 4.2、SQLite 3.46.1、Redis 8.0.5）和阿里云 Ubuntu 24.04；服务器版本及实测记录见 [服务器验证记录](docs/server-validation.md)。
+
+在 Ubuntu 安装依赖：
+
+```sh
+sudo apt update
+sudo apt install build-essential cmake git pkg-config zlib1g-dev libsqlite3-dev redis-server python3
+```
+
+在空的 `third_party` 目录中下载固定版本依赖。脚本不会覆盖已有源码目录：
+
+```sh
+bash scripts/fetch-deps.sh
+```
+
+## 构建和测试
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
 cmake --build build -j2
-python3 tests/run_phase1.py
-python3 tests/phase2.py
 ctest --test-dir build --output-on-failure
-./build/realtime_server --db /path/to/messages.db
 ```
 
-To run two instances using an already running local Redis, use the same local database file in both terminals:
+测试会使用临时数据库、独立进程和本机测试端口，测试端口需要空闲。测试覆盖房间、消息去重、ACK、历史恢复、双实例通信、Redis 故障、心跳及背压；通过测试不代表端到端严格只投递一次。
+
+## 运行服务
+
+确认本机 Redis 正在运行，可用 `redis-cli ping` 检查。两个实例使用同一个本地数据库，分别在两个终端运行：
 
 ```sh
 ./build/realtime_server --port 9001 --instance-id A --db /path/to/messages.db --redis-host 127.0.0.1 --redis-port 6379
 ./build/realtime_server --port 9002 --instance-id B --db /path/to/messages.db --redis-host 127.0.0.1 --redis-port 6379
 ```
 
-Instance IDs must differ. `--no-redis` disables forwarding for standalone tests. Redis server availability can be checked with `redis-cli ping`; its management is separate from the application. Both services bind to 127.0.0.1. The demo tokens and JSON commands are documented in [the protocol](docs/phase2.md).
+也可以使用 `bash scripts/run-demo.sh /absolute/existing-directory/messages.db` 一起启动两个前台进程。实例 ID 必须不同；`--no-redis` 可用于单实例测试。数据库建议放在 Linux 本地文件系统，父目录须已存在。按 Ctrl+C 结束前台服务。
 
-The automated tests start disposable servers on separate loopback ports, including Redis on 16379, and terminate their processes afterward; the specified test ports must be free. The standalone server listens on 127.0.0.1:9001 and defaults to `messages.db` in its current directory if `--db` is omitted. Use Ctrl+C to stop it. Prefer a local Linux filesystem for SQLite, and do not use a network share. Demo credentials are not production security.
+默认实例监听 `127.0.0.1:9001`；双实例分别监听 `9001` 和 `9002`。演示认证、创建房间、消息和 ACK 格式见 [消息协议](docs/phase2.md)。
 
-The integration tests verify two-way room messaging, deduplication, ACK and history after restart, cross-process Redis delivery, Redis outage and resubscription, client offline recovery, idle heartbeat and slow-client backpressure. GoogleTest exercises the repository. These tests do not establish exactly-once delivery. See [phase-1 record](docs/phase1.md) and [current protocol](docs/phase2.md).
+## 可视化界面
 
-The measured small-scale concurrency probe and its limitations are documented in [performance.md](docs/performance.md). SIGINT and SIGTERM close the server's sockets on the event-loop thread and join the background workers; live events not published during shutdown remain retrievable from SQLite history. The initial on-device background deployment and how to restart it are documented in [deployment.md](docs/deployment.md).
+在已配置专用 SSH 隧道的 Windows 电脑上，双击 `启动可视化界面.cmd`，打开 `http://127.0.0.1:8765/`。在两个标签页分别选择 Alice / 实例 A 和 Bob / 实例 B，加入同一房间即可观察跨实例消息。配置与限制见 [可视化界面使用说明](docs/可视化界面使用说明.md)。
 
-The [architecture](docs/architecture.md), [deployment guide](docs/deployment.md), [acceptance evidence](docs/acceptance.md) and [résumé and interview notes](docs/resume-interview.md) describe the implemented scope and its boundaries.
+## 项目文档
+
+- [架构与边界](docs/architecture.md)
+- [部署说明](docs/deployment.md)
+- [消息协议](docs/phase2.md)
+- [验收记录](docs/acceptance.md)
+- [性能测试记录](docs/performance.md)与[服务器修复验证记录](docs/server-fix-verification.md)
+- [简历描述与面试问题](docs/resume-interview.md)
+
+服务收到 SIGINT 或 SIGTERM 后会关闭连接并回收后台线程。数据库提交和 Redis 发布不构成原子事务，未成功实时投递的消息可通过历史查询恢复；详见协议文档。

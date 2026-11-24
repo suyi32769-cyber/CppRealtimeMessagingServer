@@ -1,17 +1,34 @@
-# Local Ubuntu deployment
+# Ubuntu 部署说明
 
-Install the packages listed in the README with the machine owner's approval. Clone or copy the project, run `bash scripts/fetch-deps.sh` in an empty dependency directory, then configure and build as in the README. The source bootstrap is pinned by commit; system package versions are not pinned. Never store the SQLite file on a network share. A Linux-local filesystem is recommended, and the parent directory must already exist.
+按照 [README](../README.md) 安装依赖、下载固定版本源码并使用 CMake 构建。依赖源码固定到指定提交，系统软件包版本未锁定。SQLite 数据库建议放在 Linux 本地文件系统，数据库父目录必须已存在。
 
-Check an already-running local Redis with `redis-cli ping`. With an absolute database path, start both foreground services together:
+确认 Redis 已运行：
+
+```sh
+redis-cli ping
+```
+
+使用绝对数据库路径，在前台同时启动两个实例：
 
 ```sh
 bash scripts/run-demo.sh /absolute/existing-directory/messages.db
 ```
 
-The script listens only on 127.0.0.1:9001/9002 and uses the existing local Redis at 6379. Ctrl+C ends both processes; SIGINT/SIGTERM requests socket closure on the event loop, and background workers are joined. If Redis fails, a committed message may miss live cross-instance delivery; recover it with history. For protocol examples and demo-only tokens see [phase2.md](phase2.md).
+脚本分别监听 `127.0.0.1:9001`、`127.0.0.1:9002`，使用本机 Redis 6379。按 Ctrl+C 结束进程。Redis 故障期间可能丢失实时转发，已持久化的消息可以通过历史查询恢复。演示令牌和协议见 [phase2.md](phase2.md)。
 
-Run `ctest --test-dir build --output-on-failure`. Tests use temporary databases and require unused ports 16379, 19003–19005 and 19101–19106. They do not use the deployed 9001/9002 listeners. The benchmark additionally uses 16380, 19001 and 19002. See [performance.md](performance.md); it does not predict production capacity.
+执行 `ctest --test-dir build --output-on-failure` 运行测试。测试使用临时数据库和独立端口，压测使用 16380、19001、19002；其他测试端口及其限制见 `CMakeLists.txt` 和测试脚本。测试不会使用已部署的 9001/9002 监听端口。
 
-On the original device, the initial background deployment was created with `scripts/deploy-local.sh` at `/root/CppRealtimeMessagingServer-data` because root is the current default WSL user. The directory contains `messages.db`, `A.log`, `B.log` and PID files. The helper refuses to use an existing data directory, and it does not install automatic startup. After WSL stops or Windows restarts, start the services with `bash scripts/run-demo.sh /root/CppRealtimeMessagingServer-data/messages.db` from a WSL terminal. `python3 scripts/check-demo.py` checks both running services and writes one real test message and ACK to a fresh room. Before stopping background processes using their PID files, verify the process command lines, since PIDs can be reused. Do not delete the data directory unless its contents are no longer needed.
+## 已部署的阿里云服务器
 
-For the background deployment while its original PID records are valid, `python3 scripts/restart-deployed.py /root/CppRealtimeMessagingServer-data` verifies both process command lines and refuses to disconnect active clients before signaling them. It preserves the database and appends to logs. It is Linux-specific and uses pidfds. If the old processes or PID files no longer match, the script stops without signaling; use the foreground command above after checking the ports.
+此前的部署源码位于 `/opt/CppRealtimeMessagingServer`，数据和日志位于 `/opt/CppRealtimeMessagingServer-data`。两个消息进程没有配置开机自启；Redis 是独立系统服务。启动状态及历史验证见 [server-validation.md](server-validation.md) 和 [server-fix-verification.md](server-fix-verification.md)。
+
+在现有 PID 记录仍有效的情况下，可以从项目目录运行：
+
+```sh
+python3 scripts/restart-deployed.py /opt/CppRealtimeMessagingServer-data
+python3 scripts/check-demo.py
+```
+
+重启脚本先核对两个进程的命令行，检测到活跃客户端时会拒绝断开；它保留数据库并追加日志。它依赖 Linux pidfd，如果进程或 PID 记录不匹配会停止操作。检查脚本会在新房间写入真实测试消息和 ACK。旧 WSL 部署曾使用 `/root/CppRealtimeMessagingServer-data`，与云服务器目录不同。
+
+Windows 可视化界面的启动方式见 [可视化界面使用说明](可视化界面使用说明.md)。

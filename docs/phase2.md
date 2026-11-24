@@ -1,19 +1,35 @@
-# Local two-instance prototype protocol
+# 消息协议与双实例说明
 
-The server listens only on 127.0.0.1:9001. Each connection authenticates with `{"type":"auth","token":"demo-alice"}` or `demo-bob`; the server maps these fixed demonstration tokens to `alice` and `bob`. These public constants are not production credentials and are unsuitable for untrusted users. User identity is associated with the connection; a caller-supplied user ID is never trusted.
+服务默认只监听本机 `127.0.0.1:9001`；双实例部署时第二个实例通常使用 9002。连接后使用 `{"type":"auth","token":"demo-alice"}` 或 `demo-bob` 认证，服务端将演示令牌映射为 `alice` 或 `bob`，不信任客户端自行提交的用户 ID。固定令牌仅用于演示，不适合不可信网络。
 
-After `auth_ok`, create a room using `{"type":"create_room","room_id":"room_001"}` (response `room_created`), then join using `{"type":"join","room_id":"room_001"}`. Creating an existing room returns an error. `leave` removes the user's persistent membership, and `join` adds it; multiple connections for the same user share that membership. An authenticated user may join any existing room by ID: rooms are public, not invitation-only. Sending, history, and ACK require both membership and an active join on that connection. A user who left on one connection cannot continue sending or receiving new broadcasts through another connection. A later explicit join restores membership. Creating a room records its creator as a member, but the connection must also join before exchanging messages.
+## 房间与消息
 
-`{"type":"send","room_id":"room_001","client_msg_id":"1","content":"hello"}` sends a message. `ping` can be sent before login and returns `pong`. Errors have `type: error` and a `message` field. Existing clients must create rooms before their first join; legacy database rooms remain available to join, but no members are inferred from old history. A client reconnecting must authenticate and join again. This remains a demo with two hard-coded tokens; it does not provide private-room authorization.
+收到 `auth_ok` 后，可使用 `{"type":"create_room","room_id":"room_001"}` 创建房间，成功返回 `room_created`。创建者会成为成员，但连接仍需要发送 `{"type":"join","room_id":"room_001"}` 加入后才能通信；创建已有房间会报错。
 
-Each accepted send is persisted before a local broadcast. The sender first receives `send_ok` with the server-assigned `message_id` and `duplicate` flag. `(sender_id, client_msg_id)` is unique; an identical retry returns the same ID without rebroadcast, while different room or content with the same key is rejected. A `message` event carries the ID, sender, room, client ID, content and UTC `created_at` timestamp formatted as `YYYY-MM-DDTHH:MM:SS.sssZ`. SQLite uses WAL, a busy timeout, indexed history and transactions; it still allows only one writer at a time.
+`join` 将用户写入成员表；`leave` 移除该用户的持久化成员关系，同一用户的多个连接共享成员资格。已认证用户知道房间 ID 即可加入现有房间：这是公开房间，不是邀请制。发送、查询历史和 ACK 要求用户是成员且当前连接已加入。一个连接退出后，该用户的其他连接也不能继续发送或接收之后的新广播；重新加入后恢复资格。重连需要重新认证和加入。旧数据库中的已有房间可以加入，但不会根据历史消息推测成员。
 
-After joining, `{"type":"history","room_id":"room_001","after_message_id":0}` returns up to 100 messages in ID order. Omit `after_message_id` to query after the user's stored ACK cursor. `{"type":"ack","room_id":"room_001","message_id":1}` records an individual ACK. The cursor advances only across a contiguous prefix of messages in that room with individual ACKs: acknowledging a later message cannot move it past an earlier unacknowledged message. A default history page can include already-ACKed later messages after a gap; clients must deduplicate by `message_id` and can use explicit `after_message_id` to paginate.
+发送示例：
 
-On the first upgrade from the old cursor-only schema, existing offsets are copied to `user_room_offsets_legacy` and reset to zero in one SQLite transaction. Old individual ACKs cannot be reconstructed reliably. Therefore previously seen messages may be replayed and should be deduplicated by the client. Back up the existing database before upgrading; do not run old and new binaries against the same database concurrently.
+```json
+{"type":"send","room_id":"room_001","client_msg_id":"1","content":"hello"}
+```
 
-Database work is run by a dedicated thread with one SQLite connection and at most 256 outstanding operations; completion is deferred to the event-loop thread and resolves the connection by ID. If full, the request receives an error and can be retried. SQLite BUSY/LOCKED errors on writes are retried with bounded backoff; exhaustion returns `storage failure`. SQLite still permits only one writer and does not guarantee fair scheduling or latency. A successful `send_ok` denotes a committed database write, not guaranteed delivery to every client. Room names and tokens are capped at 64 bytes, client IDs at 128 bytes, content at 4096 bytes, rooms per connection at 32, and incoming frames at 16 KiB. Idle timeout is 30 seconds, automatic pings are enabled and the configured per-connection backpressure limit is 64 KiB with closure on limit. `tests/network_limits.py` verifies a nonresponsive client times out, a pong client remains connected, and a slow subscriber is closed after reaching the limit while a healthy client remains responsive; actual thresholds and scheduling depend on socket buffers and the host.
+服务先持久化，再广播。发送者收到包含服务端 `message_id` 和 `duplicate` 标记的 `send_ok`。`(sender_id, client_msg_id)` 必须唯一：相同请求重试返回原消息 ID 且不重复广播；同一 ID 用于不同房间或内容会报错。`message` 事件包含消息 ID、发送者、房间、客户端消息 ID、内容和 UTC 时间 `created_at`。认证前可发送 `ping` 获取 `pong`；错误使用 `type: error` 和 `message`。
 
-For a newly stored message, the originating instance broadcasts locally and enqueues a Redis event containing its instance ID and message. The subscriber ignores events from its own instance and sends other events to local room subscribers through `Loop::defer`. Publisher and subscriber own separate Hiredis connections and threads. The subscriber reconnects and subscribes again after a failure. On a publish transport failure the publisher reconnects and retries the current event once; because the first publish may have succeeded despite a lost reply, receiving instances suppress recently seen `(instance_id, message_id)` pairs using an 8192-entry bounded cache. Duplicates after eviction or process restart are still possible. Publish and deferred-delivery queues are bounded to 256; overflow or Redis failure is logged and may lose live delivery. Neither SQLite and Redis nor a Pub/Sub event and client delivery form an atomic transaction. After failure, query SQLite history; Redis Pub/Sub itself retains no offline messages. Identical send retries do not rebroadcast. This is not end-to-end exactly-once.
+## 历史消息与 ACK
 
-`python3 tests/phase2.py` tests the single-instance path. `python3 tests/phase4.py` starts two independent processes and an isolated Redis, verifies cross-instance delivery, stops and restarts Redis, and checks client offline history recovery. The tests only demonstrate a single host and the exercised failure paths.
+加入后，`{"type":"history","room_id":"room_001","after_message_id":0}` 按 ID 顺序返回最多 100 条；省略 `after_message_id` 时从用户保存的 ACK 游标开始。`{"type":"ack","room_id":"room_001","message_id":1}` 逐条确认消息。只有此前消息也已确认，游标才会推进，避免乱序确认跳过缺口。缺口之后已经确认的消息可能再次返回，客户端应按 `message_id` 去重并使用明确游标分页。
+
+从旧版仅有游标的结构首次升级时，旧游标在一个 SQLite 事务中复制到 `user_room_offsets_legacy` 并重置为零。历史上的逐条 ACK 无法可靠恢复，因此可能重放已看过的消息；升级前应备份数据库，不要让新旧程序同时访问同一数据库。
+
+## 队列、限制和 Redis
+
+SQLite 操作由独立线程和连接执行，最多允许 256 个待完成操作，结果通过事件循环根据连接 ID 回复。队列满时返回错误；SQLite 写入遇到 BUSY/LOCKED 时进行有限退避重试，耗尽后返回 `storage failure`。`send_ok` 仅表示数据库提交成功，不保证所有客户端收到消息。SQLite 使用 WAL、事务、索引和等待超时，但仍只有一个写事务。
+
+房间 ID、令牌最多 64 字节；客户端消息 ID 最多 128 字节；内容最多 4096 字节；单连接最多加入 32 个房间；WebSocket 帧最多 16 KiB。连接空闲超时为 30 秒，启用自动 ping，发送背压上限为 64 KiB，超限关闭连接。`tests/network_limits.py` 验证心跳和慢客户端处理，具体时序受系统缓冲和调度影响。
+
+新消息先在本实例广播，再将包含实例 ID、消息和接收成员的事件交给 Redis 发布线程。订阅线程忽略本实例的事件，通过 `Loop::defer` 投递其他实例的消息；发布和订阅使用各自的 Hiredis 连接。订阅断开后会重连并重新订阅。发布传输失败时会重连并对当前事件最多重试一次，接收端使用最多 8192 个近期事件键抑制可能的重复；缓存淘汰或进程重启后仍可能重复。
+
+Redis 发布和延迟投递队列均有 256 的上限；队列满或 Redis 故障可能丢失实时事件。SQLite 与 Redis 不具备原子提交，Redis Pub/Sub 不提供离线补发，应通过数据库历史查询恢复，不能声称端到端严格只投递一次。
+
+`python3 tests/phase2.py` 测试单实例流程；`python3 tests/phase4.py` 启动两个独立进程和临时 Redis，检查跨实例通信、Redis 停启和历史恢复。测试结论仅适用于已覆盖的单机演示场景。

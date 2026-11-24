@@ -1,19 +1,19 @@
-# Local concurrency probe — 2026-11-23
+# 本地并发测试记录（2026-11-23）
 
-This is a short development measurement, not a capacity claim. Run `python3 tests/benchmark.py` after building. It starts its own Redis on 16380 and two instances on 19001/19002, then cleans them up.
+这是短时开发测试，不代表容量承诺。构建后运行 `python3 tests/benchmark.py`，脚本会启动临时 Redis（16380）和两个实例（19001/19002），结束后清理进程。
 
-Environment: WSL2 Ubuntu, Linux 6.18.40.1, AMD Ryzen 7 5800H (16 logical CPUs visible), 7.7 GiB WSL memory, GCC 15.2, Debug build, Redis 8.0.5. The SQLite database was placed on `/tmp`, which `df -T` reported as **tmpfs**, so this run does not measure persistent-disk durability or disk latency. Servers and clients ran on the same host through loopback.
+环境：WSL2 Ubuntu、Linux 6.18.40.1、AMD Ryzen 7 5800H（可见 16 逻辑 CPU）、7.7 GiB WSL 内存、GCC 15.2、Debug 构建、Redis 8.0.5。SQLite 数据库放在 `/tmp`；`df -T` 显示其为 **tmpfs**，因此该测试不能代表持久化磁盘的可靠性或延迟。服务和客户端运行在同一主机，通过回环地址通信。
 
-Eight concurrent clients each used a separate room and alternated between the two instances. Every client repeatedly sent a 16-byte content string, waited for its `send_ok` and its own room event, then sent the next message. Latency is the client-observed time from sending to `send_ok`, which includes database commit and local scheduling; it is not cross-instance delivery latency. The result is aggregate committed-message throughput, not connections per second.
+8 个并发客户端各使用独立房间，交替连接两个实例。每个客户端反复发送 16 字节内容，收到自己的 `send_ok` 和房间事件后发送下一条。延迟是客户端从发送到收到 `send_ok` 的时间，包含数据库提交和本地调度，不是跨实例消息到达延迟；吞吐量是提交消息数，不是每秒连接数。
 
-| Metric | Observed value |
+| 指标 | 实测值 |
 | --- | ---: |
-| Target / actual duration | 5 / 5.003 seconds |
-| Successful messages | 20,684 |
-| Throughput | 4,134.66 messages/s |
-| ACK latency p50 | 0.749 ms |
-| ACK latency p95 | 3.851 ms |
-| ACK latency p99 | 19.188 ms |
-| Client errors | 0 |
+| 计划 / 实际时长 | 5 / 5.003 秒 |
+| 成功消息数 | 20,684 |
+| 吞吐量 | 4,134.66 条/秒 |
+| ACK 延迟 P50 | 0.749 毫秒 |
+| ACK 延迟 P95 | 3.851 毫秒 |
+| ACK 延迟 P99 | 19.188 毫秒 |
+| 客户端错误数 | 0 |
 
-An earlier run with the database under `/mnt/f/wp` (reported as 9p) and a 3-second client timeout failed: four clients timed out. The successful run changed both the database location and timeout to 15 seconds, so these results do not isolate the cause. Shared SQLite has one writer at a time; storage latency, contention, different room topology, longer runs and networked clients may produce very different outcomes. Redis outage and recovery were tested separately by `tests/phase4.py`.
+早前将数据库放在 `/mnt/f/wp`（文件系统显示为 9p）、客户端超时设为 3 秒的测试中，有 4 个客户端超时。后续成功测试同时更改了数据库位置和超时时间（15 秒），因此无法据此单独确定原因。SQLite 同时只有一个写事务；磁盘延迟、锁竞争、房间结构、长时间运行和网络客户端可能得到不同结果。Redis 中断恢复由 `tests/phase4.py` 单独测试。服务器环境的另一次测试见 [server-fix-verification.md](server-fix-verification.md)。
