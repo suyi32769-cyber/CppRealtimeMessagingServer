@@ -23,16 +23,6 @@ sudo apt install build-essential cmake git pkg-config zlib1g-dev libsqlite3-dev 
 bash scripts/fetch-deps.sh
 ```
 
-## 构建和测试
-
-```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
-cmake --build build -j2
-ctest --test-dir build --output-on-failure
-```
-
-测试会使用临时数据库、独立进程和本机测试端口，测试端口需要空闲。测试覆盖房间、消息去重、ACK、历史恢复、双实例通信、Redis 故障、心跳及背压；通过测试不代表端到端严格只投递一次。
-
 ## 运行服务
 
 确认本机 Redis 正在运行，可用 `redis-cli ping` 检查。两个实例使用同一个本地数据库，分别在两个终端运行：
@@ -46,9 +36,6 @@ ctest --test-dir build --output-on-failure
 
 默认实例监听 `127.0.0.1:9001`；双实例分别监听 `9001` 和 `9002`。演示认证、创建房间、消息和 ACK 格式见 [消息协议](docs/phase2.md)。
 
-## 可视化界面
-
-在已配置专用 SSH 隧道的 Windows 电脑上，双击 `启动可视化界面.cmd`，打开 `http://127.0.0.1:8765/`。在两个标签页分别选择 Alice / 实例 A 和 Bob / 实例 B，加入同一房间即可观察跨实例消息。配置与限制见 [可视化界面使用说明](docs/可视化界面使用说明.md)。
 
 ## 项目文档
 
